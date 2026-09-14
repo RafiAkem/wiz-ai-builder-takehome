@@ -12,7 +12,7 @@ from app.database import PUBLIC_COLUMNS, LeadStore
 from app.dedupe import candidate_groups
 from app.ingest import ingest_submission
 from app.models import DedupeRequest, FormSubmission, LeadPatch, SourceRequest
-from app.source_extraction import extract_source
+from app.source_extraction import extract_source_traced
 
 
 @asynccontextmanager
@@ -102,8 +102,8 @@ def patch_lead(request: Request, lead_id: int, patch: LeadPatch) -> dict:
 
 
 @app.post("/source/extract")
-def source_extract(payload: SourceRequest) -> dict[str, str]:
-    return extract_source(payload.text, payload.original_source, payload.page_url).as_dict()
+def source_extract(payload: SourceRequest) -> dict:
+    return extract_source_traced(payload.text, payload.original_source, payload.page_url).as_dict()
 
 
 @app.get("/")

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from dataclasses import asdict, dataclass
 from typing import Protocol
 from urllib import error, request
@@ -21,11 +22,33 @@ class SourceResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class Extraction:
+    """Trace for one extraction call. Field names are the locked API contract."""
+
+    channel: str
+    detail: str
+    answered_by: str  # "rules" | "llm" | "fallback"
+    latency_ms: float
+    model: str | None
+    llm_throttled: bool = False
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
 class SourceFallback(Protocol):
+    model: str | None
+    #: True only when this fallback really got a valid answer from the LLM.
+    served_by_llm: bool
+
     def extract(self, text: str, original_source: str, page_url: str) -> SourceResult: ...
 
 
 class MockSourceFallback:
+    model = None
+    served_by_llm = False
+
     def __init__(self, result: SourceResult | None = None):
         self.result = result or SourceResult("Other", "Unclassified")
 
@@ -37,6 +60,7 @@ class GeminiSourceFallback:
     def __init__(self, api_key: str, model: str = DEFAULT_GEMINI_MODEL):
         self.api_key = api_key
         self.model = model
+        self.served_by_llm = False
 
     def extract(self, text: str, original_source: str, page_url: str) -> SourceResult:
         prompt = (
@@ -53,6 +77,7 @@ class GeminiSourceFallback:
             f"?key={self.api_key}"
         )
         call = request.Request(endpoint, data=payload, headers={"Content-Type": "application/json"})
+        self.served_by_llm = False
         try:
             with request.urlopen(call, timeout=10) as response:
                 body = json.load(response)
@@ -62,6 +87,7 @@ class GeminiSourceFallback:
             detail = clean(result.get("detail"))
             if channel not in CHANNELS or not detail:
                 raise ValueError("Gemini returned an invalid source result")
+            self.served_by_llm = True
             return SourceResult(channel, detail)
         except (error.URLError, TimeoutError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
             return SourceResult("Other", clean(original_source) or "Unclassified")
@@ -80,13 +106,8 @@ def _event_detail(text: str) -> str:
     return event + suffix
 
 
-def extract_source(
-    text: str | None,
-    original_source: str | None = None,
-    page_url: str | None = None,
-    fallback: SourceFallback | None = None,
-) -> SourceResult:
-    raw = clean(text)
+def _rules_result(raw: str, original_source: str | None, page_url: str | None) -> SourceResult | None:
+    """Deterministic extraction. Returns None when the rules deliberately miss."""
     lowered = raw.casefold()
     source = clean(original_source).casefold()
 
@@ -109,4 +130,46 @@ def extract_source(
         return SourceResult("Website", f"{page} Page" if page else "Website form")
     if source in {"direct traffic", "paid search", "other campaigns"}:
         return SourceResult("Website", clean(original_source))
+    return None
+
+
+def extract_source(
+    text: str | None,
+    original_source: str | None = None,
+    page_url: str | None = None,
+    fallback: SourceFallback | None = None,
+) -> SourceResult:
+    raw = clean(text)
+    rules = _rules_result(raw, original_source, page_url)
+    if rules is not None:
+        return rules
     return (fallback or configured_fallback()).extract(raw, clean(original_source), clean(page_url))
+
+
+def extract_source_traced(
+    text: str | None,
+    original_source: str | None = None,
+    page_url: str | None = None,
+    fallback: SourceFallback | None = None,
+) -> Extraction:
+    """Same extraction as `extract_source`, plus the observability trace."""
+    started = time.perf_counter()
+    raw = clean(text)
+    rules = _rules_result(raw, original_source, page_url)
+    if rules is not None:
+        return Extraction(rules.channel, rules.detail, "rules", _elapsed_ms(started), None)
+
+    active = fallback or configured_fallback()
+    result = active.extract(raw, clean(original_source), clean(page_url))
+    served = bool(getattr(active, "served_by_llm", False))
+    return Extraction(
+        result.channel,
+        result.detail,
+        "llm" if served else "fallback",
+        _elapsed_ms(started),
+        getattr(active, "model", None) if served else None,
+    )
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 2)
