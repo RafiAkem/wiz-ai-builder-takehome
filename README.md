@@ -125,6 +125,8 @@ TRUSTED_PROXIES=
 
 `gemini-3.6-flash` is the current Flash model returned by the Gemini API for this account. The Gemini adapter requests structured JSON and validates the returned channel. Network failures, invalid output, or a missing key degrade to a functional rule-only result. Tests inject the mock adapter, so the suite does not use the network.
 
+**Provider and spend:** Google Gemini (`gemini-3.6-flash`) through the Gemini API on a free-tier AI Studio key, so credits spent are approximately zero. The mock adapter is the default and the entire suite runs without a key. Because the hosted demo shares that free-tier key with other projects, the budget guard below is not decoration: it exists so a public URL cannot drain a quota I also depend on elsewhere. The tradeoff of the free tier is visible in the latency numbers, roughly 3.3 to 5.0 seconds per call observed, which is why the model stays a fallback rather than the default path.
+
 Every response states which layer answered, so the fallback is observable rather than assumed:
 
 ```json
