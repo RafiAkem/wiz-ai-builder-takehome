@@ -76,11 +76,14 @@ def ingest(request: Request, payload: FormSubmission | list[FormSubmission]) -> 
 def dedupe(request: Request, options: DedupeRequest = DedupeRequest()) -> dict:
     leads = store(request).all_internal()
     groups, compared = candidate_groups(leads, options.threshold)
+    items = groups[: options.limit]
     return {
-        "items": groups,
+        "items": items,
         "count": len(groups),
         "candidate_pairs_compared": compared,
         "compared_population": len(leads),
+        "returned": len(items),
+        "truncated": len(items) < len(groups),
     }
 
 

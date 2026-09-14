@@ -47,3 +47,4 @@ class SourceRequest(BaseModel):
 
 class DedupeRequest(BaseModel):
     threshold: float = Field(default=0.72, ge=0.0, le=1.0)
+    limit: int = Field(default=50, ge=1, le=500)

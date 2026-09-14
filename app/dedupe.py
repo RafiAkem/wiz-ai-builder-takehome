@@ -7,6 +7,17 @@ EMAIL_LOCALPART_THRESHOLD = 80.0
 COMPANY_NAME_THRESHOLD = 70.0
 MAX_BLOCK_SIZE = 50
 
+#: Public subset of a lead, same names as GET /leads items so the UI can render it directly.
+#: Internal scoring fields (normalized_*, email_domain) are deliberately not exposed.
+LEAD_PAYLOAD_FIELDS = (
+    "id", "full_name", "company", "email", "phone", "status", "country", "notes",
+    "source_channel", "source_detail",
+)
+
+
+def lead_payload(lead: dict) -> dict:
+    return {field: lead.get(field) for field in LEAD_PAYLOAD_FIELDS}
+
 
 def similarity(left: str, right: str) -> float:
     if not left or not right:
@@ -132,8 +143,10 @@ def candidate_groups(leads: list[dict], threshold: float = 0.72) -> tuple[list[d
                 {
                     "lead_ids": [leads[left]["id"], leads[right]["id"]],
                     "confidence": round(score, 3),
+                    "reasons": reasons,
+                    "leads": [lead_payload(leads[left]), lead_payload(leads[right])],
                 }
-                for left, right, score, _reasons in sorted(group_pairs)
+                for left, right, score, reasons in sorted(group_pairs)
             ],
         })
     return sorted(groups, key=lambda item: (-item["confidence"], item["lead_ids"])), len(candidates)
