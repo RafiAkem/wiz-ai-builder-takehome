@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,29 +31,68 @@ app = FastAPI(title="AI-Assisted Mini Lead Management System", version="1.0.0", 
 def store(request: Request) -> LeadStore:
     return request.app.state.store
 
+def _trusted_proxies() -> frozenset[IPv4Network | IPv6Network]:
+    """Peer networks whose forwarded headers we accept.
+
+    `TRUSTED_PROXIES` is a comma-separated list of CIDR ranges. Default is empty:
+    the app trusts no one, so forwarded headers from any direct peer are ignored and
+    the socket peer address is used. Configure it (e.g. `TRUSTED_PROXIES=127.0.0.1/32,::1/128`
+    behind a local nginx, or the LB's range) only for peers that overwrite or append
+    to the forwarded headers before the request reaches this app. A value a client
+    can forge would let it rotate fake IPs and mint fresh rate-limit buckets.
+    """
+    raw = os.getenv("TRUSTED_PROXIES", "")
+    networks: list[IPv4Network | IPv6Network] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            network = ip_network(part)
+        except ValueError:
+            continue  # a bad entry must never widen trust; skip it
+        if isinstance(network, (IPv4Network, IPv6Network)):
+            networks.append(network)
+    return frozenset(networks)
+
+
+def _is_trusted(peer: str) -> bool:
+    try:
+        address = ip_address(peer)
+    except ValueError:
+        return False
+    return any(address in network for network in _trusted_proxies())
+
 
 def client_ip(request: Request) -> str:
-    """Resolve the caller's IP without trusting anything the client can forge.
+    """Resolve the caller's IP, trusting forwarded headers only from trusted peers.
 
-    nginx fronts this app and sets `X-Real-IP $remote_addr` (overwritten on every
-    request) plus appends the peer address to `X-Forwarded-For`. The first XFF hop is
-    therefore attacker-controlled: rotating it would hand out a fresh rate-limit bucket
-    per request. Prefer X-Real-IP, then the LAST XFF hop (the one nginx appended), then
-    the socket peer.
+    When the socket peer is a configured trusted proxy (nginx fronts this app and
+    sets `X-Real-IP $remote_addr`, overwritten on every request, and appends the
+    peer address to `X-Forwarded-For`), the client address is X-Real-IP, falling
+    back to the LAST XFF hop — the one the proxy appended. The first XFF hop is
+    attacker-controlled either way: rotating it must never mint a fresh bucket.
+    Reached directly (tests, local dev, or no proxy configured), the socket peer is
+    used and any forwarded headers present are ignored as client-forged noise.
     """
+    peer = request.client.host if request.client else "unknown"
+    if not _is_trusted(peer):
+        return peer
     real = request.headers.get("x-real-ip")
-    if real:
+    if real and real.strip():
         return real.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[-1].strip()
-    return request.client.host if request.client else "unknown"
+        last_hop = forwarded.split(",")[-1].strip()
+        if last_hop:
+            return last_hop
+    return peer
 
 
 def llm_gate(request: Request):
-    """Budget gate for one request. Only consulted on a rules miss."""
-    address = client_ip(request)
-    return lambda: guard.try_consume(address)
+    """Per-request handle on the LLM budget (ProviderGate protocol). Only consulted
+    on a rules miss; each consume() charges this client for one provider attempt."""
+    return guard.gate_for(client_ip(request))
 
 
 @app.get("/health")

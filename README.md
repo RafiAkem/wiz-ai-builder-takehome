@@ -119,6 +119,8 @@ GEMINI_API_KEY=your-key
 GEMINI_MODEL=gemini-3.6-flash
 LLM_RATE_PER_IP_HOUR=30
 LLM_RATE_GLOBAL_DAY=800
+LLM_PROVIDER_MAX_CONCURRENCY=4
+TRUSTED_PROXIES=
 ```
 
 `gemini-3.6-flash` is the current Flash model returned by the Gemini API for this account. The Gemini adapter requests structured JSON and validates the returned channel. Network failures, invalid output, or a missing key degrade to a functional rule-only result. Tests inject the mock adapter, so the suite does not use the network.
@@ -134,13 +136,13 @@ Every response states which layer answered, so the fallback is observable rather
 
 The fallback was verified against the real API on a 12-note sample drawn from the 244 notes the rules leave unmatched (~88% of notes are caught instantly by rules). Observed behavior: latency of ~3.3-3.9s per call, correct classification of genuinely ambiguous text (e.g. a note describing a comment on a LinkedIn post → `LinkedIn`), and sensible `Other` verdicts where no channel fits. At that latency the fallback is appropriate for offline batch re-classification, not for per-request realtime use, which is why rules stay first in the pipeline and the LLM is a seam, not the default path.
 
-Gemini also answers `503` under load, which was observed roughly once every three calls while testing. A single transient error would otherwise cost a note its model verdict, so the adapter retries once immediately and only for transport trouble or a 5xx; a 4xx or malformed output is not retried, because repeating the identical call cannot fix it. The retry has no backoff and no jitter, which is fine for a demo but would need a sleep schedule and a circuit breaker under real load.
+Gemini also answers `503` under load, which was observed during testing. The adapter retries once, only for transport trouble or a `5xx`; a `4xx` or malformed output is not retried. Each real provider attempt, including a retry, consumes one budget unit. Provider work is also bounded by `LLM_PROVIDER_MAX_CONCURRENCY`; requests above that in-flight limit degrade immediately instead of occupying another application worker.
 
 ### Guarding a public fallback
 
-The hosted demo is reachable by anyone and each unmatched note can cost a model call, so the LLM path is budgeted in `app/llm_budget.py`: `LLM_RATE_PER_IP_HOUR` (default 30) in a sliding 60-minute window and `LLM_RATE_GLOBAL_DAY` (default 800) across 24 hours. A request over budget skips the call entirely and returns the degraded result with `llm_throttled: true`. Counters are in-process, so a restart clears them and they are not shared across workers; Redis is the upgrade path if this ever runs multi-worker. `GET /llm-budget` reports the limits, today's usage, and the active mode.
+The hosted demo is reachable by anyone and each unmatched note can cost a model call, so `app/llm_budget.py` enforces `LLM_RATE_PER_IP_HOUR` in a sliding 60-minute window and `LLM_RATE_GLOBAL_DAY` across 24 hours. Rules hits are free. A refused initial call or retry returns a degraded result with `llm_throttled: true`. Counters are thread-safe but remain in-process, so a restart clears them and multiple workers do not share them; Redis is the production upgrade path. `GET /llm-budget` reports the limits, current usage, and active mode.
 
-The client address comes from `X-Real-IP`, which nginx overwrites on every request, falling back to the last `X-Forwarded-For` hop. The first hop is client-supplied and is deliberately not trusted: trusting it would let a caller rotate a fake prefix and get a fresh bucket per request.
+Forwarded client headers are ignored by default. Set `TRUSTED_PROXIES` to the CIDR ranges of reverse-proxy peers that overwrite `X-Real-IP` or append `X-Forwarded-For`; only requests whose socket peer is in those ranges may supply a forwarded client address. Direct clients are always limited by their socket address.
 
 ### Dashboard
 
@@ -148,7 +150,7 @@ The client address comes from `X-Real-IP`, which nginx overwrites on every reque
 
 ## Tests
 
-31 tests cover observable and ambiguous behavior:
+48 tests cover observable and ambiguous behavior:
 
 - combined filters, search, PATCH restrictions, valid status enum, export, and missing records;
 - dashboard count invariants;

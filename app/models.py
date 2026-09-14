@@ -40,9 +40,13 @@ class FormSubmission(BaseModel):
 
 
 class SourceRequest(BaseModel):
-    text: str = ""
-    original_source: str = ""
-    page_url: str = ""
+    """Public, unauthenticated demo endpoint payload. Conservative caps keep an
+    oversized paste from turning into an oversized Gemini prompt or an oversized
+    rules pass; FastAPI rejects violations with 422 before the handler runs."""
+
+    text: str = Field(default="", max_length=4000)
+    original_source: str = Field(default="", max_length=500)
+    page_url: str = Field(default="", max_length=2048)
 
 
 class DedupeRequest(BaseModel):

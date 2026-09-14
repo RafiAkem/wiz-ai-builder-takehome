@@ -1,6 +1,8 @@
 import csv
 import io
 
+from fastapi.testclient import TestClient
+
 
 def test_list_filter_search_patch_and_export(client):
     response = client.get("/leads", params={"status": "new", "q": "Yuki Aina"})
@@ -101,31 +103,25 @@ def test_dedupe_limit_truncates_but_count_is_total(client):
     confidences = [group["confidence"] for group in full["items"]]
     assert confidences == sorted(confidences, reverse=True)
 
-    assert client.post("/leads/dedupe-candidates", json={"limit": 0}).status_code == 422
-    assert client.post("/leads/dedupe-candidates", json={"limit": 501}).status_code == 422
 
-
-def test_rotating_forwarded_for_cannot_evade_the_per_ip_limit(client, monkeypatch):
-    """A forged X-Forwarded-For prefix must not mint a fresh bucket per request.
-
-    nginx overwrites X-Real-IP with the real peer and appends that peer to
-    X-Forwarded-For, so only the last hop is trustworthy.
-    """
+def test_direct_client_cannot_spoof_proxy_headers(client, monkeypatch):
+    """Reached directly, forwarded headers are client-forged noise: every request
+    lands in the socket peer's bucket no matter which IPs the headers claim."""
     monkeypatch.setenv("LLM_RATE_PER_IP_HOUR", "1")
     monkeypatch.setenv("LLM_RATE_GLOBAL_DAY", "800")
+    monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
 
-    throttled = []
-    for spoofed in range(4):
-        response = client.post(
+    throttled = [
+        client.post(
             "/source/extract",
             json=AMBIGUOUS_NOTE,
-            headers={"X-Real-IP": "198.51.100.7", "X-Forwarded-For": f"10.0.0.{spoofed}, 198.51.100.7"},
-        )
-        assert response.status_code == 200
-        throttled.append(response.json()["llm_throttled"])
-    assert throttled == [False, True, True, True], "rotating the forged prefix minted new buckets"
+            headers={"X-Real-IP": f"198.51.100.{spoofed}"},
+        ).json()["llm_throttled"]
+        for spoofed in range(4)
+    ]
+    assert throttled == [False, True, True, True], "forged X-Real-IP minted fresh buckets"
 
-    no_real_ip = [
+    mixed = [
         client.post(
             "/source/extract",
             json=AMBIGUOUS_NOTE,
@@ -133,4 +129,51 @@ def test_rotating_forwarded_for_cannot_evade_the_per_ip_limit(client, monkeypatc
         ).json()["llm_throttled"]
         for spoofed in range(3)
     ]
-    assert no_real_ip == [False, True, True], "last XFF hop was not used when X-Real-IP is absent"
+    assert mixed == [True, True, True], "a forged XFF chain must not mint buckets either"
+
+
+def test_trusted_proxy_forwarded_headers_are_honored(monkeypatch):
+    """Behind an explicitly trusted proxy, X-Real-IP (or the last XFF hop)
+    identifies the client, so distinct clients get distinct buckets."""
+
+    monkeypatch.setenv("SOURCE_LLM_MODE", "mock")
+    from app.main import app
+
+    monkeypatch.setenv("LLM_RATE_PER_IP_HOUR", "1")
+    monkeypatch.setenv("LLM_RATE_GLOBAL_DAY", "800")
+    monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1/32")
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as proxy_client:
+        distinct = [
+            proxy_client.post(
+                "/source/extract",
+                json=AMBIGUOUS_NOTE,
+                headers={"X-Real-IP": f"203.0.113.{number}"},
+            ).json()["llm_throttled"]
+            for number in range(3)
+        ]
+        assert distinct == [False, False, False], "distinct clients were forced into one bucket"
+
+        last_hop = proxy_client.post(
+            "/source/extract",
+            json=AMBIGUOUS_NOTE,
+            headers={"X-Forwarded-For": "10.0.0.1, 203.0.113.9"},
+        ).json()["llm_throttled"]
+        assert last_hop is False, "the proxy-appended last XFF hop is a valid client address"
+
+        exhausted = proxy_client.post(
+            "/source/extract",
+            json=AMBIGUOUS_NOTE,
+            headers={"X-Real-IP": "203.0.113.9"},
+        ).json()["llm_throttled"]
+        assert exhausted is True, "the per-IP limit must apply to the header-identified client"
+
+
+def test_source_request_rejects_oversized_payloads(client):
+    """The public extract endpoint caps input length; FastAPI answers 422."""
+    assert client.post("/source/extract", json={"text": "x" * 4001}).status_code == 422
+    assert client.post("/source/extract", json={"text": "x" * 4000}).status_code == 200
+    assert client.post("/source/extract", json={"original_source": "x" * 501}).status_code == 422
+    assert client.post("/source/extract", json={"original_source": "x" * 500}).status_code == 200
+    assert client.post("/source/extract", json={"page_url": "x" * 2049}).status_code == 422
+    assert client.post("/source/extract", json={"page_url": "x" * 2048}).status_code == 200

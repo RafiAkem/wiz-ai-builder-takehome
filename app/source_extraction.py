@@ -1,14 +1,30 @@
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 from urllib import error, request
 
 from app.config import DEFAULT_GEMINI_MODEL
 
 from app.normalization import clean
+
+
+def _provider_slot_capacity() -> int:
+    try:
+        return max(1, int(os.getenv("LLM_PROVIDER_MAX_CONCURRENCY", 4)))
+    except (TypeError, ValueError):
+        return 4
+
+
+#: Bounds Gemini work in flight. Sync FastAPI endpoints run on a shared threadpool;
+#: an upstream outage (10s timeouts on every call) would otherwise pin all of its
+#: threads and stall the whole app. Admission is non-blocking — when every slot is
+#: taken the request degrades to the rules/fallback answer instead of queueing.
+#: Read once at import; adjust with LLM_PROVIDER_MAX_CONCURRENCY before startup.
+_PROVIDER_SLOTS = threading.BoundedSemaphore(_provider_slot_capacity())
 
 CHANNELS = ("Website", "Event", "LinkedIn", "Organic Search", "Referral", "Manual/Sales", "Other")
 
@@ -24,7 +40,9 @@ class SourceResult:
 
 @dataclass(frozen=True)
 class Extraction:
-    """Trace for one extraction call. Field names are the locked API contract."""
+    """Trace for one extraction call. Field names are the locked API contract.
+    `llm_throttled` is True when the answer was degraded because the budget gate or
+    the provider concurrency bound refused before any model call was made."""
 
     channel: str
     detail: str
@@ -37,22 +55,40 @@ class Extraction:
         return asdict(self)
 
 
+class ProviderGate(Protocol):
+    """Handle on the LLM budget, shared by the extraction layer and the retry loop.
+
+    One call to `consume` reserves exactly one provider HTTP call. The extraction
+    layer spends the first (so a refused request never reaches the provider), and
+    the Gemini loop spends one more per retry — counters track real provider
+    attempts, not an optimistic per-request cap. No budget logic lives here.
+    """
+
+    def consume(self) -> bool: ...
+
+
 class SourceFallback(Protocol):
     model: str | None
     #: True only when this fallback really got a valid answer from the LLM.
     served_by_llm: bool
+    llm_throttled: bool
 
-    def extract(self, text: str, original_source: str, page_url: str) -> SourceResult: ...
+    def extract(
+        self, text: str, original_source: str, page_url: str, retry_gate: ProviderGate | None = None
+    ) -> SourceResult: ...
 
 
 class MockSourceFallback:
     model = None
     served_by_llm = False
+    llm_throttled = False
 
     def __init__(self, result: SourceResult | None = None):
         self.result = result or SourceResult("Other", "Unclassified")
 
-    def extract(self, text: str, original_source: str, page_url: str) -> SourceResult:
+    def extract(
+        self, text: str, original_source: str, page_url: str, retry_gate: ProviderGate | None = None
+    ) -> SourceResult:
         return self.result
 
 
@@ -67,8 +103,11 @@ class GeminiSourceFallback:
         self.api_key = api_key
         self.model = model
         self.served_by_llm = False
+        self.llm_throttled = False
 
-    def extract(self, text: str, original_source: str, page_url: str) -> SourceResult:
+    def extract(
+        self, text: str, original_source: str, page_url: str, retry_gate: ProviderGate | None = None
+    ) -> SourceResult:
         prompt = (
             "Classify this CRM lead source. Return JSON only with channel and detail. "
             f"channel must be one of: {', '.join(CHANNELS)}. "
@@ -83,7 +122,14 @@ class GeminiSourceFallback:
             f"?key={self.api_key}"
         )
         self.served_by_llm = False
+        self.llm_throttled = False
         for attempt in range(self.MAX_ATTEMPTS):
+            # The first attempt's charge was spent by the extraction layer before it
+            # called us; every retry charges the gate again and gives up gracefully
+            # when the budget is out — no free calls past the accounting.
+            if attempt and retry_gate is not None and not retry_gate.consume():
+                self.llm_throttled = True
+                break
             last = attempt == self.MAX_ATTEMPTS - 1
             try:
                 with request.urlopen(
@@ -170,12 +216,15 @@ def extract_source_traced(
     original_source: str | None = None,
     page_url: str | None = None,
     fallback: SourceFallback | None = None,
-    gate: Callable[[], bool] | None = None,
+    gate: ProviderGate | None = None,
 ) -> Extraction:
     """Same extraction as `extract_source`, plus the observability trace.
 
-    `gate` is consulted only on a rules miss, immediately before the fallback runs.
-    A refusal degrades the answer instead of raising.
+    On a rules miss, the request first needs a free provider slot, then spends one
+    budget unit via `gate.consume()` — that charge pays for the first provider call,
+    and the Gemini retry loop spends one more per retry, so the counters track real
+    provider attempts. Any refusal — no free slot, budget exhausted — degrades the
+    answer instead of raising and is reported as `llm_throttled`.
     """
     started = time.perf_counter()
     raw = clean(text)
@@ -183,20 +232,27 @@ def extract_source_traced(
     if rules is not None:
         return Extraction(rules.channel, rules.detail, "rules", _elapsed_ms(started), None)
 
-    if gate is not None and not gate():
-        degraded = SourceResult("Other", clean(original_source) or "Unclassified")
+    degraded = SourceResult("Other", clean(original_source) or "Unclassified")
+    if not _PROVIDER_SLOTS.acquire(blocking=False):
+        # Upstream at capacity: refuse fast instead of adding another waiting thread.
         return Extraction(degraded.channel, degraded.detail, "fallback", _elapsed_ms(started), None, True)
+    try:
+        if gate is not None and not gate.consume():
+            return Extraction(degraded.channel, degraded.detail, "fallback", _elapsed_ms(started), None, True)
 
-    active = fallback or configured_fallback()
-    result = active.extract(raw, clean(original_source), clean(page_url))
-    served = bool(getattr(active, "served_by_llm", False))
-    return Extraction(
-        result.channel,
-        result.detail,
-        "llm" if served else "fallback",
-        _elapsed_ms(started),
-        getattr(active, "model", None) if served else None,
-    )
+        active = fallback or configured_fallback()
+        result = active.extract(raw, clean(original_source), clean(page_url), retry_gate=gate)
+        served = bool(getattr(active, "served_by_llm", False))
+        return Extraction(
+            result.channel,
+            result.detail,
+            "llm" if served else "fallback",
+            _elapsed_ms(started),
+            getattr(active, "model", None) if served else None,
+            bool(getattr(active, "llm_throttled", False)),
+        )
+    finally:
+        _PROVIDER_SLOTS.release()
 
 
 def _elapsed_ms(started: float) -> float:

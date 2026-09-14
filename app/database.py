@@ -18,7 +18,9 @@ from app.normalization import (
     normalize_status,
     parse_date,
 )
-from app.source_extraction import extract_source
+from app.source_extraction import MockSourceFallback, extract_source
+
+_RULE_ONLY_FALLBACK = MockSourceFallback()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (
@@ -92,7 +94,7 @@ class LeadStore:
     @staticmethod
     def _from_csv(row: dict[str, str]) -> dict[str, object]:
         full_name = display_name(row["First Name"], row["Last Name"], row["Full Name"])
-        source = extract_source(row["Notes"], row["Original Source"])
+        source = extract_source(row["Notes"], row["Original Source"], fallback=_RULE_ONLY_FALLBACK)
         email = normalize_email(row["Email"])
         score = clean(row["Lead Score"])
         return {

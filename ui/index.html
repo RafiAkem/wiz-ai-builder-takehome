@@ -64,17 +64,17 @@
   .muted { color: var(--muted); }
   .small { font-size: 11px; }
   .err { color: var(--bad); padding: 12px 0; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   /* dedupe side-by-side */
   .dup-group { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; background: var(--surface-2); }
   .dup-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
   .reasons { display: flex; gap: 6px; flex-wrap: wrap; }
-  .cmp { display: grid; grid-template-columns: 110px minmax(0,1fr) minmax(0,1fr); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; font-size: 12.5px; }
-  .cmp > div { padding: 7px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; min-width: 0; }
-  .cmp > div:nth-last-child(-n+3) { border-bottom: none; }
-  .cmp .fld { color: var(--muted); font-weight: 600; }
+  .cmp { width: 100%; border-collapse: collapse; border: 1px solid var(--border); font-size: 12.5px; }
+  .cmp th, .cmp td { padding: 7px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; min-width: 0; text-align: left; vertical-align: top; }
+  .cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: none; }
+  .cmp thead th { font-size: 11px; font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; }
+  .cmp .fld { color: var(--muted); font-weight: 600; width: 110px; }
   .cmp .diff { background: var(--accent-soft); color: var(--accent); }
-  .cmp-head { display: grid; grid-template-columns: 110px minmax(0,1fr) minmax(0,1fr); font-size: 11px; font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
-  .cmp-head > div { padding: 0 10px; min-width: 0; overflow-wrap: anywhere; }
   /* extract result */
   .extract-out { margin-top: 14px; border: 1px solid var(--border); border-radius: 8px; padding: 14px; background: var(--surface-2); }
   .extract-out .chan { font-size: 16px; font-weight: 700; margin: 6px 0 2px; }
@@ -85,8 +85,8 @@
   @media (max-width: 640px) {
     main { padding: 14px 12px 96px; }
     header, nav[role="tablist"], footer { padding-left: 12px; padding-right: 12px; }
-    .cmp { grid-template-columns: 72px minmax(0,1fr) minmax(0,1fr); font-size: 11.5px; }
-    .cmp-head { grid-template-columns: 72px minmax(0,1fr) minmax(0,1fr); }
+    .cmp { font-size: 11.5px; }
+    .cmp .fld { width: 72px; }
     footer .lead-count { display: none; }
   }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -142,7 +142,7 @@
   <section role="tabpanel" id="panel-ingest" aria-labelledby="tab-ingest" hidden>
     <div class="panel" style="max-width:640px">
       <h2>Ingest a form submission</h2>
-      <p class="hint">Existing leads with the same name and company are updated instead of duplicated.</p>
+      <p class="hint">Existing leads with the same email address or phone number are updated instead of duplicated.</p>
       <form id="ingest-form" class="field" style="gap:10px" autocomplete="off">
         <div class="row">
           <label class="field grow" for="f-form_id">form_id<input id="f-form_id" required></label>
@@ -313,17 +313,22 @@ $('btn-sample').addEventListener('click', () => {
     message: 'Following up after our earlier conversation, please send more info.'};
   for (const [k, v] of Object.entries(s)) $('f-' + k).value = v;
 });
+function isoNow() {
+  return new Date().toISOString().slice(0, 19);
+}
 $('ingest-form').addEventListener('submit', async e => {
   e.preventDefault();
   const out = $('ingest-result');
-  const body = {};
+  const body = {submitted_at: isoNow()};
   for (const k of ['form_id','form_name','page_url','name','email','phone','company','country','message']) body[k] = $('f-' + k).value;
   out.innerHTML = '<span class="muted">Submitting...</span>';
   try {
     const r = await fetchJson('/leads/ingest', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-    const created = r.result === 'created';
-    out.innerHTML = `<span class="chip ${created ? 'ok' : 'accent'}">${esc(r.result ?? r.status ?? 'done').toUpperCase()}</span>
-      <span class="muted">lead #${esc(r.lead_id ?? r.id ?? '?')}${created ? ' was created' : ' already existed, it was updated'}</span>`;
+    const result = r.results?.[0] ?? {};
+    const created = result.action === 'created';
+    const lead = result.lead ?? {};
+    out.innerHTML = `<span class="chip ${created ? 'ok' : 'accent'}">${esc(result.action ?? 'done').toUpperCase()}</span>
+      <span class="muted">lead #${esc(lead.id ?? '?')}${created ? ' was created' : ' already existed, it was updated'}</span>`;
   } catch (err) { out.innerHTML = '<span class="err">Could not ingest. Check the fields and retry.</span>'; }
 });
 
@@ -338,29 +343,42 @@ function renderGroup(g) {
         <span class="chip accent num">${Math.round(Number(p.confidence) * 100)}% match</span>
         <span class="reasons">${p.reasons.map(r => `<span class="chip">${esc(r)}</span>`).join('')}</span>
       </div>
-      <div class="cmp-head" aria-hidden="true"><div></div><div>#${esc(a.id)}</div><div>#${esc(b.id)}</div></div>
-      <div class="cmp" role="table" aria-label="Duplicate comparison for leads ${esc(a.id)} and ${esc(b.id)}">
+      <table class="cmp" aria-label="Duplicate comparison for leads ${esc(a.id)} and ${esc(b.id)}">
+        <thead><tr><th scope="col"><span class="sr-only">Field</span></th><th scope="col">#${esc(a.id)}</th><th scope="col">#${esc(b.id)}</th></tr></thead>
+        <tbody>
         ${CMP_FIELDS.map(([k, label]) => {
           const diff = String(a[k] ?? '') !== String(b[k] ?? '');
-          return `<div class="fld" role="rowheader">${label}</div>
-            <div${diff ? ' class="diff"' : ''}>${k === 'status' ? (a[k] ? `<span class="badge b-${esc(a[k]).replaceAll(' ', '-')}">${esc(a[k])}</span>` : '&mdash;') : dash(a[k])}</div>
-            <div${diff ? ' class="diff"' : ''}>${k === 'status' ? (b[k] ? `<span class="badge b-${esc(b[k]).replaceAll(' ', '-')}">${esc(b[k])}</span>` : '&mdash;') : dash(b[k])}</div>`;
+          const cell = l => k === 'status'
+            ? (l[k] ? `<span class="badge b-${esc(l[k]).replaceAll(' ', '-')}">${esc(l[k])}</span>` : '&mdash;')
+            : dash(l[k]);
+          return `<tr>
+            <th scope="row" class="fld">${label}</th>
+            <td${diff ? ' class="diff"' : ''}>${cell(a)}</td>
+            <td${diff ? ' class="diff"' : ''}>${cell(b)}</td>
+          </tr>`;
         }).join('')}
-      </div>
+        </tbody>
+      </table>
     </div>`;
   }).join('');
 }
 function renderMore(n) {
   const wrap = $('dedupe-result');
   const next = dedupeData.items.slice(shown, shown + n);
-  wrap.insertAdjacentHTML('beforeend', next.map(renderGroup).join(''));
+  const frag = document.createDocumentFragment();
+  const groups = document.createElement('template');
+  groups.innerHTML = next.map(renderGroup).join('');
+  frag.append(...groups.content.children);
   shown += next.length;
-  const more = wrap.querySelector('#show-more');
+  const more = wrap.querySelector('#show-more-wrap');
+  if (more) wrap.insertBefore(frag, more);
+  else wrap.appendChild(frag);
   if (shown < dedupeData.items.length) {
-    if (more) more.replaceWith(more);
-    else wrap.insertAdjacentHTML('beforeend', '<div style="text-align:center;padding:8px"><button type="button" id="show-more">Show more groups</button></div>');
+    if (!more) {
+      wrap.insertAdjacentHTML('beforeend', '<div id="show-more-wrap" style="text-align:center;padding:8px"><button type="button" id="show-more">Show more groups</button></div>');
+    }
     wrap.querySelector('#show-more').onclick = () => { renderMore(10); };
-  } else if (more) more.parentElement.remove();
+  } else if (more) more.remove();
 }
 async function runDedupe() {
   const btn = $('btn-dedupe');
@@ -379,7 +397,8 @@ async function runDedupe() {
     $('dedupe-result').replaceChildren();
     renderMore(10);
     // ponytail: renders first 10 groups of the fetched payload; "show more" re-renders client-side from the same response. No pagination API.
-  } catch {
+  } catch (error) {
+    console.error("Dedupe request failed", error);
     $('dedupe-result').innerHTML = '<div class="err">Could not run dedupe. <button type="button" onclick="runDedupe()">Retry</button></div>';
   } finally { btn.disabled = false; }
 }
