@@ -2,9 +2,10 @@ import csv
 import io
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.config import DEFAULT_DATABASE_PATH
 from app.database import PUBLIC_COLUMNS, LeadStore
@@ -103,6 +104,11 @@ def patch_lead(request: Request, lead_id: int, patch: LeadPatch) -> dict:
 @app.post("/source/extract")
 def source_extract(payload: SourceRequest) -> dict[str, str]:
     return extract_source(payload.text, payload.original_source, payload.page_url).as_dict()
+
+
+@app.get("/")
+def ui() -> FileResponse:
+    return FileResponse(Path(__file__).parent.parent / "ui" / "index.html")
 
 
 @app.get("/dashboard")
