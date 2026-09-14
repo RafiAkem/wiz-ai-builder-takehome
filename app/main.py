@@ -32,10 +32,20 @@ def store(request: Request) -> LeadStore:
 
 
 def client_ip(request: Request) -> str:
-    """nginx sits in front, so trust the first hop of X-Forwarded-For when present."""
+    """Resolve the caller's IP without trusting anything the client can forge.
+
+    nginx fronts this app and sets `X-Real-IP $remote_addr` (overwritten on every
+    request) plus appends the peer address to `X-Forwarded-For`. The first XFF hop is
+    therefore attacker-controlled: rotating it would hand out a fresh rate-limit bucket
+    per request. Prefer X-Real-IP, then the LAST XFF hop (the one nginx appended), then
+    the socket peer.
+    """
+    real = request.headers.get("x-real-ip")
+    if real:
+        return real.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 

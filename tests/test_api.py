@@ -44,7 +44,7 @@ AMBIGUOUS_NOTE = {"text": "Introduced through our ecosystem."}
 def test_extract_endpoint_reports_trace_and_throttles(client, monkeypatch):
     monkeypatch.setenv("LLM_RATE_PER_IP_HOUR", "2")
     monkeypatch.setenv("LLM_RATE_GLOBAL_DAY", "800")
-    headers = {"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}
+    headers = {"X-Real-IP": "203.0.113.9", "X-Forwarded-For": "10.0.0.1, 203.0.113.9"}
 
     hit = client.post("/source/extract", json={"text": "Scanned our QR code at the SaaStr Annual booth."}, headers=headers)
     assert hit.status_code == 200
@@ -103,3 +103,34 @@ def test_dedupe_limit_truncates_but_count_is_total(client):
 
     assert client.post("/leads/dedupe-candidates", json={"limit": 0}).status_code == 422
     assert client.post("/leads/dedupe-candidates", json={"limit": 501}).status_code == 422
+
+
+def test_rotating_forwarded_for_cannot_evade_the_per_ip_limit(client, monkeypatch):
+    """A forged X-Forwarded-For prefix must not mint a fresh bucket per request.
+
+    nginx overwrites X-Real-IP with the real peer and appends that peer to
+    X-Forwarded-For, so only the last hop is trustworthy.
+    """
+    monkeypatch.setenv("LLM_RATE_PER_IP_HOUR", "1")
+    monkeypatch.setenv("LLM_RATE_GLOBAL_DAY", "800")
+
+    throttled = []
+    for spoofed in range(4):
+        response = client.post(
+            "/source/extract",
+            json=AMBIGUOUS_NOTE,
+            headers={"X-Real-IP": "198.51.100.7", "X-Forwarded-For": f"10.0.0.{spoofed}, 198.51.100.7"},
+        )
+        assert response.status_code == 200
+        throttled.append(response.json()["llm_throttled"])
+    assert throttled == [False, True, True, True], "rotating the forged prefix minted new buckets"
+
+    no_real_ip = [
+        client.post(
+            "/source/extract",
+            json=AMBIGUOUS_NOTE,
+            headers={"X-Forwarded-For": f"172.16.0.{spoofed}, 203.0.113.55"},
+        ).json()["llm_throttled"]
+        for spoofed in range(3)
+    ]
+    assert no_real_ip == [False, True, True], "last XFF hop was not used when X-Real-IP is absent"
