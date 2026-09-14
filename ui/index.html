@@ -199,12 +199,12 @@
 </main>
 
 <footer>
-  <span class="lead-count" id="foot-count"></span>
+  <span class="lead-count" id="foot-hint"></span>
   <span class="spacer"></span>
   <button id="prev" type="button" disabled>Prev</button>
   <span class="num" id="page-label">Page 1</span>
   <button id="next" type="button">Next</button>
-  <a href="https://github.com/RafiAkem/wiz-ai-lead-management">source</a>
+  <a href="https://github.com/RafiAkem/wiz-ai-builder-takehome">source</a>
 </footer>
 
 <script>
@@ -220,6 +220,13 @@ async function fetchJson(url, options = {}) {
 
 /* tabs: state in URL hash, keyboard accessible */
 const TABS = ['leads', 'ingest', 'dedupe', 'extract'];
+/* footer: pagination only means something on the Leads tab */
+const FOOT_HINT = {
+  leads: '',
+  ingest: 'POST /leads/ingest',
+  dedupe: 'POST /leads/dedupe-candidates',
+  extract: 'POST /source/extract'
+};
 function showTab(name, focus) {
   if (!TABS.includes(name)) name = 'leads';
   for (const t of TABS) {
@@ -229,6 +236,9 @@ function showTab(name, focus) {
     tab.tabIndex = on ? 0 : -1;
     panel.hidden = !on;
   }
+  const paging = name === 'leads';
+  for (const id of ['prev', 'page-label', 'next']) $(id).hidden = !paging;
+  $('foot-hint').textContent = FOOT_HINT[name];
   if (focus) $('tab-' + name).focus();
   if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
 }
@@ -269,7 +279,6 @@ async function loadLeads() {
     const data = await fetchJson('/leads?' + params, {signal: controller.signal});
     if (controller !== leadsController) return;
     $('count').textContent = data.total + ' total, showing ' + data.items.length;
-    $('foot-count').textContent = data.total + ' leads in the system';
     $('prev').disabled = page <= 1;
     $('next').disabled = page * PER_PAGE >= data.total;
     $('page-label').textContent = 'Page ' + page;
