@@ -107,3 +107,53 @@ def test_gemini_fallback_degrades_on_transport_error(monkeypatch):
     assert trace.answered_by == "fallback"
     assert trace.model is None
     assert trace.detail == "Partner"
+
+
+def _gemini_body(channel="Referral", detail="Partner network"):
+    import json as _json
+    payload = _json.dumps({"candidates": [{"content": {"parts": [{"text": _json.dumps({"channel": channel, "detail": detail})}]}}]})
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return payload.encode()
+    return Response()
+
+
+def test_gemini_retries_once_on_upstream_5xx(monkeypatch):
+    """Gemini answers 503 under load; one retry should recover the model answer."""
+    from urllib.error import HTTPError
+
+    calls = []
+
+    def flaky(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise HTTPError("https://example.invalid", 503, "Service Unavailable", {}, None)
+        return _gemini_body()
+
+    monkeypatch.setattr("app.source_extraction.request.urlopen", flaky)
+    trace = extract_source_traced(
+        "Introduced through our ecosystem.", "Partner", fallback=GeminiSourceFallback("test-key")
+    )
+    assert len(calls) == 2
+    assert trace.answered_by == "llm"
+    assert trace.model == "gemini-3.6-flash"
+    assert (trace.channel, trace.detail) == ("Referral", "Partner network")
+
+
+def test_gemini_does_not_retry_on_client_error(monkeypatch):
+    from urllib.error import HTTPError
+
+    calls = []
+
+    def denied(*_args, **_kwargs):
+        calls.append(1)
+        raise HTTPError("https://example.invalid", 400, "Bad Request", {}, None)
+
+    monkeypatch.setattr("app.source_extraction.request.urlopen", denied)
+    trace = extract_source_traced(
+        "Introduced through our ecosystem.", "Partner", fallback=GeminiSourceFallback("test-key")
+    )
+    assert len(calls) == 1, "a 4xx must not be retried"
+    assert trace.answered_by == "fallback"
+    assert trace.detail == "Partner"

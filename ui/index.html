@@ -386,7 +386,7 @@ async function runDedupe() {
 $('btn-dedupe').addEventListener('click', runDedupe);
 
 /* extract: proves the AI is real */
-const AMBIGUOUS = 'Came across them in a Slack community thread and they asked for a demo.';
+const AMBIGUOUS = 'Introduced through our ecosystem partner program after a chat with their CTO.';
 $('btn-ambig').addEventListener('click', () => { $('ext-text').value = AMBIGUOUS; $('ext-text').focus(); });
 async function runExtract() {
   const text = $('ext-text').value.trim();

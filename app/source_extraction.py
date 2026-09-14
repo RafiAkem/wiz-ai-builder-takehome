@@ -57,6 +57,12 @@ class MockSourceFallback:
 
 
 class GeminiSourceFallback:
+    #: One immediate retry when the upstream is in trouble. Observed in practice: Gemini
+    #: answers 503 under load, and a single note should not lose its model call to that.
+    #: ponytail: no backoff and no jitter. Ceiling: a sustained outage still costs one extra
+    #: wasted call per request. Upgrade path: a sleep schedule plus a circuit breaker.
+    MAX_ATTEMPTS = 2
+
     def __init__(self, api_key: str, model: str = DEFAULT_GEMINI_MODEL):
         self.api_key = api_key
         self.model = model
@@ -76,21 +82,34 @@ class GeminiSourceFallback:
             f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
             f"?key={self.api_key}"
         )
-        call = request.Request(endpoint, data=payload, headers={"Content-Type": "application/json"})
         self.served_by_llm = False
-        try:
-            with request.urlopen(call, timeout=10) as response:
-                body = json.load(response)
-            content = body["candidates"][0]["content"]["parts"][0]["text"]
-            result = json.loads(content)
-            channel = result.get("channel")
-            detail = clean(result.get("detail"))
-            if channel not in CHANNELS or not detail:
-                raise ValueError("Gemini returned an invalid source result")
-            self.served_by_llm = True
-            return SourceResult(channel, detail)
-        except (error.URLError, TimeoutError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
-            return SourceResult("Other", clean(original_source) or "Unclassified")
+        for attempt in range(self.MAX_ATTEMPTS):
+            last = attempt == self.MAX_ATTEMPTS - 1
+            try:
+                with request.urlopen(
+                    request.Request(endpoint, data=payload, headers={"Content-Type": "application/json"}),
+                    timeout=10,
+                ) as response:
+                    body = json.load(response)
+                content = body["candidates"][0]["content"]["parts"][0]["text"]
+                result = json.loads(content)
+                channel = result.get("channel")
+                detail = clean(result.get("detail"))
+                if channel not in CHANNELS or not detail:
+                    raise ValueError("Gemini returned an invalid source result")
+                self.served_by_llm = True
+                return SourceResult(channel, detail)
+            except error.HTTPError as exc:
+                # HTTPError subclasses URLError, so it has to be caught first. Only a 5xx is
+                # worth a second try; a 4xx means the request itself is wrong.
+                if last or exc.code < 500:
+                    break
+            except (error.URLError, TimeoutError):
+                if last:
+                    break
+            except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+                break  # malformed or invalid output: repeating the same call will not help
+        return SourceResult("Other", clean(original_source) or "Unclassified")
 
 
 def configured_fallback() -> SourceFallback:
