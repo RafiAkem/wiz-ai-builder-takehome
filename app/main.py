@@ -108,7 +108,10 @@ def source_extract(payload: SourceRequest) -> dict[str, str]:
 
 @app.get("/")
 def ui() -> FileResponse:
-    return FileResponse(Path(__file__).parent.parent / "ui" / "index.html")
+    ui_path = Path(__file__).parent.parent / "ui" / "index.html"
+    if not ui_path.is_file():
+        raise HTTPException(status_code=404, detail="Dashboard UI not available")
+    return FileResponse(ui_path)
 
 
 @app.get("/dashboard")

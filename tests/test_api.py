@@ -30,3 +30,9 @@ def test_detail_validation_and_dashboard(client):
     assert dashboard["total"] == 2049
     assert sum(dashboard["by_status"].values()) == 2049
     assert sum(dashboard["by_source_channel"].values()) == 2049
+
+
+def test_dashboard_ui_is_served(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Lead Management Dashboard" in response.text

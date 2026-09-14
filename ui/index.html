@@ -15,6 +15,7 @@
   h1 { font-size: 20px; font-weight: 650; margin-bottom: 2px; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
   .grid { display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start; }
+  .grid > * { min-width: 0; }
   @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
   .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 12px; }
@@ -25,12 +26,17 @@
   .stat-row .label { min-width: 108px; }
   .total { font-size: 26px; font-weight: 700; color: var(--accent); margin-bottom: 8px; }
   .total small { font-size: 12px; color: var(--muted); font-weight: 400; }
-  .filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-  input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 10px; font-size: 13px; }
-  input { flex: 1; min-width: 140px; }
-  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: end; }
+  .filter-field { display: grid; gap: 4px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+  .filter-field.search { flex: 1; min-width: 180px; }
+  input, select { min-height: 40px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 10px; font-size: 13px; }
+  input { width: 100%; min-width: 0; }
+  input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .table-scroll { max-width: 100%; overflow-x: auto; }
+  .table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (max-width: 560px) { body { padding: 16px; } table { min-width: 680px; } }
   td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
   tr:hover td { background: rgba(255,255,255,.02); }
   td.name { font-weight: 600; white-space: nowrap; }
@@ -43,7 +49,7 @@
   .b-Closed-Lost { background: rgba(248,81,73,.15); color: var(--bad); }
   .chan { color: var(--muted); font-size: 12px; }
   .muted { color: var(--muted); }
-  button { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  button { min-height: 40px; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
   button:hover { background: rgba(247,129,102,.22); }
   button:disabled { opacity: .5; cursor: wait; }
   #dedupe-result { margin-top: 12px; max-height: 320px; overflow-y: auto; }
@@ -65,7 +71,7 @@
   <div>
     <div class="panel">
       <h2>Overview</h2>
-      <div class="total" id="total">– <small>leads</small></div>
+      <div class="total"><span id="total-value">–</span> <small>leads</small></div>
       <h2 style="margin-top:14px">By status</h2>
       <div id="by-status"></div>
       <h2 style="margin-top:14px">By source channel</h2>
@@ -74,101 +80,148 @@
     <div class="panel" style="margin-top:16px">
       <h2>AI dedup candidates</h2>
       <div class="muted" style="font-size:12.5px;margin-bottom:10px">Blocking-based entity resolution — surfaces likely duplicate leads for review. Nothing is merged automatically.</div>
-      <button id="btn-dedupe" onclick="runDedupe()">Find duplicate candidates</button>
-      <div id="dedupe-result"></div>
+      <button id="btn-dedupe" type="button">Find duplicate candidates</button>
+      <div id="dedupe-result" aria-live="polite"></div>
     </div>
   </div>
 
   <div class="panel">
     <div class="toolbar">
       <div class="filters">
-        <input id="q" placeholder="Search name, company, email…" oninput="debouncedLoad()">
-        <select id="status" onchange="load()">
-          <option value="">All statuses</option>
-          <option>New</option><option>Contacted</option><option>Connected</option>
-          <option>Qualified</option><option>Opportunity</option>
-          <option>Closed Won</option><option>Closed Lost</option>
-        </select>
-        <input id="country" placeholder="Country" style="max-width:110px" oninput="debouncedLoad()">
+        <label class="filter-field search" for="q">Search
+          <input id="q" type="search" placeholder="Name, company, or email" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="filter-field" for="status">Status
+          <select id="status">
+            <option value="">All statuses</option>
+            <option>New</option><option>Contacted</option><option>Connected</option>
+            <option>Qualified</option><option>Opportunity</option>
+            <option>Closed Won</option><option>Closed Lost</option>
+          </select>
+        </label>
+        <label class="filter-field" for="country">Country
+          <input id="country" placeholder="Any country" autocomplete="country-name" style="max-width:130px">
+        </label>
       </div>
-      <span class="count" id="count"></span>
+      <span class="count" id="count" aria-live="polite"></span>
     </div>
-    <table>
-      <thead><tr><th>Name</th><th>Company</th><th>Status</th><th>Source</th><th>Owner</th></tr></thead>
-      <tbody id="rows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
-    </table>
+    <div class="table-scroll" tabindex="0" aria-label="Lead results">
+      <table>
+        <thead><tr><th>Name</th><th>Company</th><th>Status</th><th>Source</th><th>Owner</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
-<div class="foot">Demo UI &middot; data is synthetic &middot; <a href="https://github.com/RafiAkem/wiz-ai-lead-management">source</a></div>
+<div class="foot">Demo UI &middot; supplied synthetic CRM seed data &middot; <a href="https://github.com/RafiAkem/wiz-ai-lead-management">source</a></div>
 
 <script>
 const API = '';
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const queryInput = document.getElementById('q');
+const statusFilter = document.getElementById('status');
+const countryInput = document.getElementById('country');
+const count = document.getElementById('count');
+const rows = document.getElementById('rows');
+const dedupeButton = document.getElementById('btn-dedupe');
+const dedupeResult = document.getElementById('dedupe-result');
+const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
 
-function bars(el, obj) {
-  const max = Math.max(...Object.values(obj), 1);
-  el.innerHTML = Object.entries(obj).sort((a,b) => b[1]-a[1]).map(([k,v]) =>
-    `<div class="stat-row"><span class="label">${esc(k)}</span><span class="bar-wrap"><span class="bar" style="width:${(v/max*100).toFixed(1)}%"></span></span><span class="val">${v}</span></div>`
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
+  return response.json();
+}
+
+function bars(element, values) {
+  const entries = Object.entries(values ?? {}).map(([label, value]) => [label, Number(value) || 0]);
+  const max = Math.max(...entries.map(([, value]) => value), 1);
+  element.innerHTML = entries.sort((left, right) => right[1] - left[1]).map(([label, value]) =>
+    `<div class="stat-row"><span class="label">${esc(label)}</span><span class="bar-wrap"><span class="bar" style="width:${(value / max * 100).toFixed(1)}%"></span></span><span class="val">${esc(value)}</span></div>`
   ).join('');
 }
 
 async function loadDashboard() {
   try {
-    const d = await (await fetch(API + '/dashboard')).json();
-    document.getElementById('total').innerHTML = `${d.total} <small>leads</small>`;
-    bars(document.getElementById('by-status'), d.by_status);
-    bars(document.getElementById('by-channel'), d.by_source_channel);
-  } catch { /* demo */ }
+    const dashboard = await fetchJson(API + '/dashboard');
+    document.getElementById('total-value').textContent = String(dashboard.total);
+    bars(document.getElementById('by-status'), dashboard.by_status);
+    bars(document.getElementById('by-channel'), dashboard.by_source_channel);
+  } catch {
+    document.getElementById('total-value').textContent = 'Unavailable';
+    document.getElementById('by-status').innerHTML = '<div class="err">Could not load dashboard. <button type="button" onclick="loadDashboard()">Retry</button></div>';
+    document.getElementById('by-channel').replaceChildren();
+  }
 }
 
 let timer;
-function debouncedLoad() { clearTimeout(timer); timer = setTimeout(load, 300); }
+let leadsController;
+function debouncedLoad() {
+  clearTimeout(timer);
+  timer = setTimeout(loadLeads, 300);
+}
 
-async function load() {
-  const p = new URLSearchParams();
-  if (q.value) p.set('q', q.value);
-  if (status.value) p.set('status', status.value);
-  if (country.value) p.set('country', country.value);
-  p.set('limit', '25');
-  const rows = document.getElementById('rows');
+async function loadLeads() {
+  leadsController?.abort();
+  const controller = new AbortController();
+  leadsController = controller;
+  const params = new URLSearchParams();
+  if (queryInput.value) params.set('q', queryInput.value);
+  if (statusFilter.value) params.set('status', statusFilter.value);
+  if (countryInput.value) params.set('country', countryInput.value);
+  params.set('limit', '25');
+  rows.setAttribute('aria-busy', 'true');
   try {
-    const d = await (await fetch(API + '/leads?' + p)).json();
-    document.getElementById('count').textContent = `${d.total} total · showing ${d.items.length}`;
-    rows.innerHTML = d.items.length ? d.items.map(l => `
+    const data = await fetchJson(API + '/leads?' + params, {signal: controller.signal});
+    if (controller !== leadsController) return;
+    count.textContent = `${data.total} total · showing ${data.items.length}`;
+    rows.innerHTML = data.items.length ? data.items.map(lead => `
       <tr>
-        <td class="name">${esc(l.full_name)}</td>
-        <td class="company">${esc(l.company) || '—'}</td>
-        <td><span class="badge b-${esc(l.status).replace(' ','-')}">${esc(l.status)}</span></td>
-        <td class="chan">${esc(l.source_channel)}<div class="muted" style="font-size:11px">${esc(l.source_detail) || ''}</div></td>
-        <td class="muted">${esc(l.owner) || '—'}</td>
+        <td class="name">${esc(lead.full_name)}</td>
+        <td class="company">${esc(lead.company) || '—'}</td>
+        <td><span class="badge b-${esc(lead.status).replaceAll(' ', '-')}">${esc(lead.status)}</span></td>
+        <td class="chan">${esc(lead.source_channel)}<div class="muted" style="font-size:11px">${esc(lead.source_detail)}</div></td>
+        <td class="muted">${esc(lead.owner) || '—'}</td>
       </tr>`).join('')
-      : '<tr><td colspan="5" class="muted">No leads match.</td></tr>';
-  } catch {
-    rows.innerHTML = '<tr><td colspan="5" class="err">Failed to reach API.</td></tr>';
+      : '<tr><td colspan="5" class="muted">No leads match these filters.</td></tr>';
+  } catch (error) {
+    if (error.name !== 'AbortError' && controller === leadsController) {
+      rows.innerHTML = '<tr><td colspan="5" class="err">Could not load leads. <button type="button" onclick="loadLeads()">Retry</button></td></tr>';
+    }
+  } finally {
+    if (controller === leadsController) rows.removeAttribute('aria-busy');
   }
 }
 
 async function runDedupe() {
-  const btn = document.getElementById('btn-dedupe');
-  const out = document.getElementById('dedupe-result');
-  btn.disabled = true;
+  dedupeButton.disabled = true;
+  dedupeButton.setAttribute('aria-busy', 'true');
+  dedupeResult.textContent = 'Finding duplicate candidates…';
   try {
-    const d = await (await fetch(API + '/leads/dedupe-candidates', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})).json();
-    out.innerHTML = `<div class="muted" style="font-size:12px;margin:8px 0">${d.count} candidate groups · compared ${d.candidate_pairs_compared} pairs (vs ${((d.compared_population*(d.compared_population-1))/2).toLocaleString()} brute-force)</div>` +
-      d.items.slice(0, 10).map(g => `
+    const data = await fetchJson(API + '/leads/dedupe-candidates', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+    });
+    const bruteForcePairs = data.compared_population * (data.compared_population - 1) / 2;
+    dedupeResult.innerHTML = `<div class="muted" style="font-size:12px;margin:8px 0">${esc(data.count)} candidate groups · compared ${esc(data.candidate_pairs_compared)} pairs (vs ${esc(bruteForcePairs.toLocaleString())} brute-force)</div>` +
+      data.items.slice(0, 10).map(group => `
         <div class="dup-group">
-          <span class="conf">${(g.confidence*100).toFixed(0)}%</span> leads ${g.lead_ids.join(' ↔ ')}
-          <div class="why">${g.explanation.map(esc).join(' · ')}</div>
-        </div>`).join('') + (d.count > 10 ? `<div class="muted" style="font-size:12px">…and ${d.count-10} more</div>` : '');
+          <span class="conf">${esc((Number(group.confidence) * 100).toFixed(0))}%</span> leads ${group.lead_ids.map(esc).join(' ↔ ')}
+          <div class="why">${group.explanation.map(esc).join(' · ')}</div>
+        </div>`).join('') + (data.count > 10 ? `<div class="muted" style="font-size:12px">…and ${esc(data.count - 10)} more</div>` : '');
   } catch {
-    out.innerHTML = '<div class="err">Failed to run dedupe.</div>';
+    dedupeResult.innerHTML = '<div class="err">Could not run dedupe. <button type="button" onclick="runDedupe()">Retry</button></div>';
+  } finally {
+    dedupeButton.disabled = false;
+    dedupeButton.removeAttribute('aria-busy');
   }
-  btn.disabled = false;
 }
 
+queryInput.addEventListener('input', debouncedLoad);
+statusFilter.addEventListener('change', loadLeads);
+countryInput.addEventListener('input', debouncedLoad);
+dedupeButton.addEventListener('click', runDedupe);
 loadDashboard();
-load();
+loadLeads();
 </script>
 </body>
 </html>
