@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lead Management Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --accent: #f78166; --accent-soft: rgba(247,129,102,.12);
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 24px; max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 650; margin-bottom: 2px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 12px; }
+  .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 13px; }
+  .stat-row .bar-wrap { flex: 1; margin: 0 10px; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+  .stat-row .bar { height: 100%; background: var(--accent); border-radius: 3px; }
+  .stat-row .val { color: var(--muted); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+  .stat-row .label { min-width: 108px; }
+  .total { font-size: 26px; font-weight: 700; color: var(--accent); margin-bottom: 8px; }
+  .total small { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 10px; font-size: 13px; }
+  input { flex: 1; min-width: 140px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: rgba(255,255,255,.02); }
+  td.name { font-weight: 600; white-space: nowrap; }
+  td.company { color: var(--muted); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .b-New { background: rgba(63,185,80,.15); color: var(--ok); }
+  .b-Contacted, .b-Connected { background: rgba(210,153,34,.15); color: var(--warn); }
+  .b-Qualified, .b-Opportunity { background: rgba(247,129,102,.15); color: var(--accent); }
+  .b-Closed-Won { background: rgba(63,185,80,.25); color: var(--ok); }
+  .b-Closed-Lost { background: rgba(248,81,73,.15); color: var(--bad); }
+  .chan { color: var(--muted); font-size: 12px; }
+  .muted { color: var(--muted); }
+  button { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  button:hover { background: rgba(247,129,102,.22); }
+  button:disabled { opacity: .5; cursor: wait; }
+  #dedupe-result { margin-top: 12px; max-height: 320px; overflow-y: auto; }
+  .dup-group { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; font-size: 12.5px; }
+  .dup-group .conf { color: var(--warn); font-weight: 700; }
+  .dup-group .why { color: var(--muted); }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+  .count { color: var(--muted); font-size: 12.5px; }
+  .err { color: var(--bad); padding: 12px; text-align: center; }
+  a { color: var(--accent); text-decoration: none; }
+  .foot { margin-top: 16px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<h1>Lead Management Dashboard</h1>
+<div class="sub">AI-assisted mini lead management system &middot; <a href="/docs">API docs</a></div>
+
+<div class="grid">
+  <div>
+    <div class="panel">
+      <h2>Overview</h2>
+      <div class="total" id="total">– <small>leads</small></div>
+      <h2 style="margin-top:14px">By status</h2>
+      <div id="by-status"></div>
+      <h2 style="margin-top:14px">By source channel</h2>
+      <div id="by-channel"></div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <h2>AI dedup candidates</h2>
+      <div class="muted" style="font-size:12.5px;margin-bottom:10px">Blocking-based entity resolution — surfaces likely duplicate leads for review. Nothing is merged automatically.</div>
+      <button id="btn-dedupe" onclick="runDedupe()">Find duplicate candidates</button>
+      <div id="dedupe-result"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="toolbar">
+      <div class="filters">
+        <input id="q" placeholder="Search name, company, email…" oninput="debouncedLoad()">
+        <select id="status" onchange="load()">
+          <option value="">All statuses</option>
+          <option>New</option><option>Contacted</option><option>Connected</option>
+          <option>Qualified</option><option>Opportunity</option>
+          <option>Closed Won</option><option>Closed Lost</option>
+        </select>
+        <input id="country" placeholder="Country" style="max-width:110px" oninput="debouncedLoad()">
+      </div>
+      <span class="count" id="count"></span>
+    </div>
+    <table>
+      <thead><tr><th>Name</th><th>Company</th><th>Status</th><th>Source</th><th>Owner</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="foot">Demo UI &middot; data is synthetic &middot; <a href="https://github.com/RafiAkem/wiz-ai-lead-management">source</a></div>
+
+<script>
+const API = '';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function bars(el, obj) {
+  const max = Math.max(...Object.values(obj), 1);
+  el.innerHTML = Object.entries(obj).sort((a,b) => b[1]-a[1]).map(([k,v]) =>
+    `<div class="stat-row"><span class="label">${esc(k)}</span><span class="bar-wrap"><span class="bar" style="width:${(v/max*100).toFixed(1)}%"></span></span><span class="val">${v}</span></div>`
+  ).join('');
+}
+
+async function loadDashboard() {
+  try {
+    const d = await (await fetch(API + '/dashboard')).json();
+    document.getElementById('total').innerHTML = `${d.total} <small>leads</small>`;
+    bars(document.getElementById('by-status'), d.by_status);
+    bars(document.getElementById('by-channel'), d.by_source_channel);
+  } catch { /* demo */ }
+}
+
+let timer;
+function debouncedLoad() { clearTimeout(timer); timer = setTimeout(load, 300); }
+
+async function load() {
+  const p = new URLSearchParams();
+  if (q.value) p.set('q', q.value);
+  if (status.value) p.set('status', status.value);
+  if (country.value) p.set('country', country.value);
+  p.set('limit', '25');
+  const rows = document.getElementById('rows');
+  try {
+    const d = await (await fetch(API + '/leads?' + p)).json();
+    document.getElementById('count').textContent = `${d.total} total · showing ${d.items.length}`;
+    rows.innerHTML = d.items.length ? d.items.map(l => `
+      <tr>
+        <td class="name">${esc(l.full_name)}</td>
+        <td class="company">${esc(l.company) || '—'}</td>
+        <td><span class="badge b-${esc(l.status).replace(' ','-')}">${esc(l.status)}</span></td>
+        <td class="chan">${esc(l.source_channel)}<div class="muted" style="font-size:11px">${esc(l.source_detail) || ''}</div></td>
+        <td class="muted">${esc(l.owner) || '—'}</td>
+      </tr>`).join('')
+      : '<tr><td colspan="5" class="muted">No leads match.</td></tr>';
+  } catch {
+    rows.innerHTML = '<tr><td colspan="5" class="err">Failed to reach API.</td></tr>';
+  }
+}
+
+async function runDedupe() {
+  const btn = document.getElementById('btn-dedupe');
+  const out = document.getElementById('dedupe-result');
+  btn.disabled = true;
+  try {
+    const d = await (await fetch(API + '/leads/dedupe-candidates', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})).json();
+    out.innerHTML = `<div class="muted" style="font-size:12px;margin:8px 0">${d.count} candidate groups · compared ${d.candidate_pairs_compared} pairs (vs ${((d.compared_population*(d.compared_population-1))/2).toLocaleString()} brute-force)</div>` +
+      d.items.slice(0, 10).map(g => `
+        <div class="dup-group">
+          <span class="conf">${(g.confidence*100).toFixed(0)}%</span> leads ${g.lead_ids.join(' ↔ ')}
+          <div class="why">${g.explanation.map(esc).join(' · ')}</div>
+        </div>`).join('') + (d.count > 10 ? `<div class="muted" style="font-size:12px">…and ${d.count-10} more</div>` : '');
+  } catch {
+    out.innerHTML = '<div class="err">Failed to run dedupe.</div>';
+  }
+  btn.disabled = false;
+}
+
+loadDashboard();
+load();
+</script>
+</body>
+</html>
