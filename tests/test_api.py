@@ -104,6 +104,12 @@ def test_dedupe_limit_truncates_but_count_is_total(client):
     assert confidences == sorted(confidences, reverse=True)
 
 
+def test_dedupe_limit_outside_range_is_rejected(client):
+    for bad in (0, -1, 501):
+        response = client.post("/leads/dedupe-candidates", json={"limit": bad})
+        assert response.status_code == 422, f"limit={bad} must be rejected"
+
+
 def test_direct_client_cannot_spoof_proxy_headers(client, monkeypatch):
     """Reached directly, forwarded headers are client-forged noise: every request
     lands in the socket peer's bucket no matter which IPs the headers claim."""

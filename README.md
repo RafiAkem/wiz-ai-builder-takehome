@@ -150,7 +150,7 @@ Forwarded client headers are ignored by default. Set `TRUSTED_PROXIES` to the CI
 
 ## Tests
 
-48 tests cover observable and ambiguous behavior:
+49 tests cover observable and ambiguous behavior:
 
 - combined filters, search, PATCH restrictions, valid status enum, export, and missing records;
 - dashboard count invariants;
