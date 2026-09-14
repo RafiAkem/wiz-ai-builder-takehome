@@ -116,6 +116,8 @@ GEMINI_MODEL=gemini-3.6-flash
 
 `gemini-3.6-flash` is the current Flash model returned by the Gemini API for this account. The Gemini adapter requests structured JSON and validates the returned channel. Network failures, invalid output, or a missing key degrade to a functional rule-only result. Tests inject the mock adapter, so the suite does not use the network.
 
+The fallback was verified against the real API on a 12-note sample drawn from the 244 notes the rules leave unmatched (~88% of notes are caught instantly by rules). Observed behavior: latency of ~3.3-3.9s per call, correct classification of genuinely ambiguous text (e.g. a note describing a comment on a LinkedIn post → `LinkedIn`), and sensible `Other` verdicts where no channel fits. At that latency the fallback is appropriate for offline batch re-classification, not for per-request realtime use — which is why rules stay first in the pipeline and the LLM is a seam, not the default path.
+
 ## Tests
 
 The tests cover observable and ambiguous behavior:
