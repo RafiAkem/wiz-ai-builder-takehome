@@ -11,8 +11,9 @@ from app.config import DEFAULT_DATABASE_PATH
 from app.database import PUBLIC_COLUMNS, LeadStore
 from app.dedupe import candidate_groups
 from app.ingest import ingest_submission
+from app.llm_budget import guard
 from app.models import DedupeRequest, FormSubmission, LeadPatch, SourceRequest
-from app.source_extraction import extract_source_traced
+from app.source_extraction import GeminiSourceFallback, configured_fallback, extract_source_traced
 
 
 @asynccontextmanager
@@ -28,6 +29,20 @@ app = FastAPI(title="AI-Assisted Mini Lead Management System", version="1.0.0", 
 
 def store(request: Request) -> LeadStore:
     return request.app.state.store
+
+
+def client_ip(request: Request) -> str:
+    """nginx sits in front, so trust the first hop of X-Forwarded-For when present."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def llm_gate(request: Request):
+    """Budget gate for one request. Only consulted on a rules miss."""
+    address = client_ip(request)
+    return lambda: guard.try_consume(address)
 
 
 @app.get("/health")
@@ -105,8 +120,23 @@ def patch_lead(request: Request, lead_id: int, patch: LeadPatch) -> dict:
 
 
 @app.post("/source/extract")
-def source_extract(payload: SourceRequest) -> dict:
-    return extract_source_traced(payload.text, payload.original_source, payload.page_url).as_dict()
+def source_extract(request: Request, payload: SourceRequest) -> dict:
+    return extract_source_traced(
+        payload.text, payload.original_source, payload.page_url, gate=llm_gate(request)
+    ).as_dict()
+
+
+@app.get("/llm-budget")
+def llm_budget() -> dict:
+    fallback = configured_fallback()
+    live = isinstance(fallback, GeminiSourceFallback)
+    return {
+        "per_ip_hour_limit": guard.per_ip_limit,
+        "global_day_limit": guard.global_limit,
+        "global_used_today": guard.used_today(),
+        "mode": "gemini" if live else "mock",
+        "model": fallback.model if live else None,
+    }
 
 
 @app.get("/")

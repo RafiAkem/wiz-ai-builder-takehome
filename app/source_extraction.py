@@ -3,7 +3,7 @@ import os
 import re
 import time
 from dataclasses import asdict, dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 from urllib import error, request
 
 from app.config import DEFAULT_GEMINI_MODEL
@@ -151,13 +151,22 @@ def extract_source_traced(
     original_source: str | None = None,
     page_url: str | None = None,
     fallback: SourceFallback | None = None,
+    gate: Callable[[], bool] | None = None,
 ) -> Extraction:
-    """Same extraction as `extract_source`, plus the observability trace."""
+    """Same extraction as `extract_source`, plus the observability trace.
+
+    `gate` is consulted only on a rules miss, immediately before the fallback runs.
+    A refusal degrades the answer instead of raising.
+    """
     started = time.perf_counter()
     raw = clean(text)
     rules = _rules_result(raw, original_source, page_url)
     if rules is not None:
         return Extraction(rules.channel, rules.detail, "rules", _elapsed_ms(started), None)
+
+    if gate is not None and not gate():
+        degraded = SourceResult("Other", clean(original_source) or "Unclassified")
+        return Extraction(degraded.channel, degraded.detail, "fallback", _elapsed_ms(started), None, True)
 
     active = fallback or configured_fallback()
     result = active.extract(raw, clean(original_source), clean(page_url))
